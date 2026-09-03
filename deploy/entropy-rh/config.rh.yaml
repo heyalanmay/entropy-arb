@@ -52,18 +52,23 @@ entropy:
   #    填高了只是少开仓（偏保守、不亏钱），填低了是真亏钱。
   #    跑 python3 deploy/entropy-rh/preflight.py 会自动核对这一项。
   taker_fee_bps: 4.5
-  max_position_usd: 600      # 持仓上限（美元）
+  # ⚠️ 2026-09-04 按实际资金下调（原 600）。
+  #    算法：cap = 该场所可用保证金 × 杠杆 × 安全系数
+  #           = $50 × 10(io:SNDK maxLeverage) × 0.3 ≈ 150
+  #    安全系数取 0.3 是为了留出：逐仓保证金缓冲 + 浮亏 + 单边未对冲的瞬间暴露。
+  #    加钱后按同样公式重算，别直接改回 600。
+  max_position_usd: 150      # 持仓上限（美元）
   max_orders_per_min: 120    # 每分钟下单预算
 
 hedge:
   taker_fee_bps: 0.0         # Lighter 系列 0 bps taker
-  max_position_usd: 600      # 持仓上限（美元）
+  max_position_usd: 150      # 持仓上限（美元），与上面同步
   max_orders_per_min: 30     # Lighter 硬上限约 40/分钟，留余量
 
 # ========================= 下单规模 / SIZING =================================
 sizing:
   take_fraction: 0.5             # 只吃可套利深度的一半，避免尾部滑点
-  max_order_notional_usd: 50     # 单笔名义上限
+  max_order_notional_usd: 30     # 单笔名义上限（cap 150 ÷ 5 笔，避免一次打满）
   # ⚠️ 这个下限由 Lighter 的最小下单量决定，不是随便填的：
   #    实测 RH SNDK：min_base=0.01 枚、min_quote=10 USD、size 精度 4 位。
   #    SNDK 现价约 $1540 → 0.01 枚 ≈ $15.4，所以名义 $10 的单换算成币数会低于
