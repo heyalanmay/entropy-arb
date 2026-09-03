@@ -18,9 +18,23 @@ cd "$DIR"
 SYMBOL="${SYMBOL:-SNDK}"
 HEDGE="${HEDGE:-lighter-rh}"
 PY="${PY:-python3}"
+USE_PROXY="${USE_PROXY:-0}"
 LOG_DIR="$DIR/logs"
 PID_FILE="$DIR/.bot.pid"
 mkdir -p "$LOG_DIR"
+
+# --- 代理隔离（macOS 必须，Linux 无害）-------------------------------------
+# REST 走 aiohttp（不读代理，永远直连），WS 走 websockets（v14+ 会读环境
+# 变量 **和 macOS 系统网络设置**）。开了 Clash/Surge 系统代理时 websockets
+# 会去连 SOCKS 并报 "requires python-socks"，两腿全 STALE、永不交易 ——
+# 而且日志开头 REST 是成功的，看起来像连上了，极易误判。
+# 默认强制 WS 也直连，和 REST 同一条链路（延迟一致，基差才准）。
+# 真的必须走代理时：USE_PROXY=1 ./run.sh record
+if [[ "$USE_PROXY" != "1" ]]; then
+    export no_proxy='*' NO_PROXY='*'
+    unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY \
+          ws_proxy wss_proxy WS_PROXY WSS_PROXY || true
+fi
 
 is_running() {
     [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
@@ -54,6 +68,21 @@ do_start() {
         echo "已启动 [$mode] pid=$(cat "$PID_FILE")"
         echo "输出: $out"
         echo "引擎日志: $LOG_DIR/engine.log"
+        # 两腿 WS 必须都连上，否则引擎只是空转（STALE 不会下单，钱白站着）
+        for _ in $(seq 1 30); do
+            [[ $(grep -c "connected" "$out" 2>/dev/null) -ge 2 ]] && break
+            sleep 1
+        done
+        if [[ $(grep -c "connected" "$out" 2>/dev/null) -lt 2 ]]; then
+            echo
+            echo "!! 30 秒内两腿 WS 没都连上，引擎在空转。最近错误:"
+            grep -m3 "ws error" "$out" 2>/dev/null | sed 's/^/    /'
+            grep -q "python-socks" "$out" 2>/dev/null && \
+                echo "    => 系统代理劫持了 websockets；本脚本已屏蔽，若仍报错说明跑的是旧版 run.sh"
+            echo "   处理完再 ./run.sh stop 重启。"
+        else
+            echo "两腿 WS 已连接。"
+        fi
         tail -n 15 "$out"
     else
         echo "启动失败，查看输出: $out"
