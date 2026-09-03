@@ -11,7 +11,7 @@
 # 进程用 nohup 脱离终端 —— 关掉终端窗口也会继续跑。
 # 注意：Mac 合盖休眠会中断采集，跑长任务前先关休眠或接电源。
 # ---------------------------------------------------------------------------
-set -uo pipefail
+set -o pipefail
 
 REPO="${REPO:-$HOME/entropy-arb}"          # 服务器上改这里，或 export REPO=...
 SYMBOL="${SYMBOL:-SNDK}"
@@ -51,15 +51,22 @@ if [[ ! -f config.yaml ]]; then
 fi
 mkdir -p logs
 
-# ---- 时长换算成秒 ----
-UNIT="${DURATION: -1}"       # 最后一个字符
-NUM="${DURATION%?}"          # 去掉最后一个字符（${x:0:-1} 在 bash 下会报错）
-case "$UNIT" in
-    h|H) SECS=$(python3 -c "print(int(float('$NUM')*3600))") ;;
-    m|M) SECS=$(python3 -c "print(int(float('$NUM')*60))") ;;
-    s|S) SECS="$NUM" ;;
-    *)   echo "时长格式不对：$DURATION（用 30m / 3.5h / 24h）"; exit 1 ;;
-esac
+# ---- 时长换算成秒（用 python 解析，避免 bash 子串在 set -u 下的坑）----
+SECS=$(python3 - <<'PY' "$DURATION"
+import sys
+d = sys.argv[1]
+u = d[-1].lower()
+n = d[:-1]
+try:
+    f = float(n)
+except ValueError:
+    sys.exit(2)
+table = {'h': int(f * 3600), 'm': int(f * 60), 's': int(f)}
+if u not in table:
+    sys.exit(3)
+print(table[u])
+PY
+) || { echo "时长格式不对：$DURATION（用 30m / 3.5h / 24h）"; exit 1; }
 
 if (( SECS < 60 )); then
     echo "时长太短（$SECS 秒），至少 1 分钟才有统计意义"
