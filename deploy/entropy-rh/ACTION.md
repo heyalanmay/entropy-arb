@@ -143,28 +143,53 @@ Hyperliquid 的 API 钱包叫 **agent wallet**，它有个反直觉的特性：
 
 > 首次充值会顺带在链上创建你的 HL 账户。最低 5 USDC。
 
-## 2.4 ⚠️ 关键：把钱转到 io dex 的清算所
+## 2.4 ⚠️ 关键：充值的钱默认在【现货账户】，要转到 io dex 的 perp 账户
 
-**这一步最容易漏，漏了会「明明有钱但下不了单」。**
+**这一步 100% 会踩，踩了就是「明明有钱但下不了单」。**
 
-Entropy 跑在 Hyperliquid 的 `io` dex 上，而 **io dex 有自己独立的清算所**，
-和你主 perps 账户的钱是**两笔账**。我实测确认过：
+Hyperliquid 一个地址下面有**三个独立的钱袋子**，充值的 USDC **默认落在现货账户**：
+
+| 账户 | 用途 | 充值后默认 |
+|---|---|---|
+| **现货 Spot** | 买现货用 | ✅ **钱在这里** |
+| 主 perps | 普通合约 | ❌ 空的 |
+| **io dex perp** | **Entropy 套利实际用的** | ❌ 空的 |
+
+所以必须走 **Spot → io dex perp** 这一步。io dex 是纯逐仓（`onlyIsolated`），
+保证金必须先放进去才能开仓。
+
+### 网页怎么转（推荐）
+
+1. 打开 <https://app.hyperliquid.xyz> → **Portfolio**（投资组合）
+2. 找 **Transfer / 转账** 入口
+3. 填写：
+   - 从：**Spot**（现货）
+   - 到：**Perp**
+   - **dex 选 `io`** ← 这一步最关键，别选成默认的主 dex
+   - 金额：**50**
+4. 确认
+
+> 如果界面上没有 dex 下拉框：先去交易页搜索 `SNDK`，选中 **`io:SNDK`**
+> （带 `io:` 前缀的），切过去后右上角通常会弹转账提示。
+
+### 不知道自己的钱在哪？跑这个
 
 ```bash
-# 主 perps 账户
-curl -s -X POST https://api.hyperliquid.xyz/info -H "Content-Type: application/json" \
-  -d '{"type":"clearinghouseState","user":"0x你的地址"}'
-
-# io dex 清算所  ← 套利实际用的是这个
-curl -s -X POST https://api.hyperliquid.xyz/info -H "Content-Type: application/json" \
-  -d '{"type":"clearinghouseState","user":"0x你的地址","dex":"io"}'
+bash /Users/ylh/WorkBuddy/2026-09-02-23-29-43/deploy/entropy-rh/check-hl.sh 0x你的地址
 ```
 
-在 HL 网页界面上把 USDC 从主账户转到 io dex（找 **Portfolio / Balances** 页面里的
-dex 切换或 Transfer 入口；io dex 是纯逐仓 `onlyIsolated`，所以必须先把保证金放进去）。
+它会把三个账户的余额都列出来，并在钱放错地方时**直接告诉你要怎么转**。
 
-**验证**：上面第二条命令返回的 `marginSummary.accountValue` 必须 **> 0**。
-如果还是 `0.0`，说明钱没转进去，回去找界面上的转账入口。
+### 底层 API（如果界面实在找不到入口）
+
+两个 action **不要混用**：
+
+| 场景 | action | 关键字段 |
+|---|---|---|
+| **Spot → io dex perp** ← 你要的这个 | `PerpDexClassTransfer` | `dex:"io"`, `token:"USDC"`, `toPerp:true` |
+| perp dex 之间互转 | `PerpDexTransfer` | `sourceDex:""`, `destinationDex:"io"` |
+
+签名类型都是 EIP-712 的 `HyperliquidTransaction:PerpDex*Transfer`（user-signed）。
 
 ## 2.5 创建 agent 钱包，拿到私钥
 
