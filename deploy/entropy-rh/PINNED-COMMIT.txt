@@ -1,0 +1,11 @@
+# 生产环境固定的上游 commit —— 不要用分支最新代码跑实盘
+pinned_commit = aa0391471f6bf72f78c45801fb8117b7bf7e8c89
+pinned_date   = 2026-09-03 04:38:06 UTC
+upstream      = https://github.com/your-quantguy/entropy-arb.git
+
+# 上游有更新时，按这个流程走（不要直接 git pull）：
+#   git fetch upstream
+#   git diff vendor/upstream..upstream/main            # 看上游改了什么
+#   git branch -f vendor/upstream upstream/main        # 认可后再更新基准
+#   git checkout main && git merge vendor/upstream     # 合进生产分支
+#   重跑测试 + preflight.py，全绿后才上机

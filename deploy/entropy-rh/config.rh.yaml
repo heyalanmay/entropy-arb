@@ -1,0 +1,108 @@
+# =============================================================================
+# entropy-arb 策略配置 —— 交易对：Entropy(io dex) × Lighter Robinhood 链
+# 启动命令：python3 main.py --symbol SNDK --hedge lighter-rh
+#
+# 复制位置：~/entropy-arb/config.yaml  （install.sh 会自动备份旧文件再覆盖）
+# 注意：本文件会被严格校验，任何拼错的键都会导致启动失败。
+# =============================================================================
+
+# ============================ 信号 / SIGNAL ==================================
+# premium_bps = (Entropy 价格 / Lighter-RH 价格 - 1) * 10000
+#
+#   溢价 >= midline + upper  →  卖 Entropy + 买 RH
+#   溢价 <= midline - lower  →  买 Entropy + 卖 RH
+#
+# 引擎会在门槛之上再叠加两个场所的 taker 手续费。
+#
+# ⚠️⚠️ 重要（2026-09-03 实测推导，务必读懂再改这几个数）⚠️⚠️
+#
+# 引擎的实际净利 = 有效门槛（engine.py 的 _eff_threshold）：
+#     卖 Entropy 方向：threshold = midline + upper
+#     买 Entropy 方向：threshold = lower - midline
+# 且双腿是同时成交、当场锁平的，所以 **每笔净利(bps) 就精确等于 threshold**
+# （已用真实代码 plan_arb 逐档验证：-1.7→亏1.70，2.0→赚2.00，7.7→赚7.70）。
+#
+# 推论：**threshold 为负 = 每笔必亏。**
+# 旧值 midline -3.7 / upper 2.0 时，卖方向门槛 = -3.7+2.0 = **-1.7 bps**，
+# 也就是一旦触发就稳定亏钱。（买方向 = 4.0+3.7 = +7.7，是赚的，配置自相矛盾。）
+#
+# 安全约束（改参数时必须满足）：
+#     midline + upper >= 1.0     且     lower - midline >= 1.0
+# 若想两个方向对称：upper = lower - 2*midline
+#
+# 下面这组是「保证不亏」的保守值，两个方向门槛都是 +7.7 bps。
+# 但它几乎不会触发 —— 这是诚实的现状，不是配置错误，原因见 DEPLOY.md 第 0c 节。
+# 真正的阈值请采集 24~72 小时后用 tools/analyze.py --fees-bps 4.5 算出再填。
+thresholds:
+  midline_bps: -3.7     # 溢价中枢：Entropy 长期比 RH 便宜 3.7 bps
+  upper_bps: 11.4       # 上方带宽：使门槛 = -3.7+11.4 = +7.7 bps（勿再调回 2.0）
+  lower_bps: 4.0        # 下方带宽：使门槛 = 4.0-(-3.7) = +7.7 bps
+
+# ======================== 交易所参数 / VENUES ================================
+entropy:
+  dex: io                    # Entropy 在 Hyperliquid 上的 dex 名，不要改
+  # ⚠️ 全策略最致命的一个数。引擎把它叠加到每个方向的入场门槛上，
+  #    填少了不是「少赚」，而是把净利为负的单子当成正 edge 放行。
+  #
+  #    实测（2026-09-02，HL /info userFees）：
+  #      · io dex 的 feeRecipient = null → 当前不收 builder 附加费
+  #      · HL 基础 taker = 4.5 bps（0 交易量档），有 staking 可降（实测某账户 4.05）
+  #    所以正确值是 4.5 或你的账户实际值，不是仓库默认的 0.0，也不是 2.5。
+  #
+  #    填高了只是少开仓（偏保守、不亏钱），填低了是真亏钱。
+  #    跑 python3 deploy/entropy-rh/preflight.py 会自动核对这一项。
+  taker_fee_bps: 4.5
+  max_position_usd: 600      # 持仓上限（美元）
+  max_orders_per_min: 120    # 每分钟下单预算
+
+hedge:
+  taker_fee_bps: 0.0         # Lighter 系列 0 bps taker
+  max_position_usd: 600      # 持仓上限（美元）
+  max_orders_per_min: 30     # Lighter 硬上限约 40/分钟，留余量
+
+# ========================= 下单规模 / SIZING =================================
+sizing:
+  take_fraction: 0.5             # 只吃可套利深度的一半，避免尾部滑点
+  max_order_notional_usd: 50     # 单笔名义上限
+  # ⚠️ 这个下限由 Lighter 的最小下单量决定，不是随便填的：
+  #    实测 RH SNDK：min_base=0.01 枚、min_quote=10 USD、size 精度 4 位。
+  #    SNDK 现价约 $1540 → 0.01 枚 ≈ $15.4，所以名义 $10 的单换算成币数会低于
+  #    min_base，被 Lighter 直接拒单。取 20 留出缓冲（$20 ≈ 0.013 枚）。
+  #    币价大涨后记得回来重算：min_notional ≈ min_base × 现价 × 1.3
+  min_order_notional_usd: 20
+
+# ==================== 库存阶梯 / INVENTORY LADDER ============================
+# 单场所持仓超过上限 50% 后，同方向加仓需额外溢价，线性增至满仓时 +10 bps。
+inventory:
+  scale_bps: 10.0
+  floor_frac: 0.5
+
+# ======================= 执行参数 / EXECUTION ================================
+execution:
+  premium_persist_sec: 0.3     # 信号需持续 0.3 秒才触发，过滤一跳即逝的假信号
+  cooldown_sec: 0.0            # 两次执行的最小间隔
+  settle_timeout_sec: 10.0     # Lighter 走 ws 异步结算，留足确认时间
+  leg_slippage_bps: 50.0       # 每腿 taker 限价保护
+  hedge_slippage_bps: 20.0     # 净敞口对冲的价格保护
+  net_tolerance_base: 0.001    # 允许的净敞口（币本位）
+  max_consecutive_errors: 3    # 连续失败 N 次后停机
+  rate_limit_pause_sec: 10.0   # 被限频后的暂停时长
+  staleness_sec: 10.0          # 行情超时判定（按连接存活，非最后更新时间）
+  reconcile_sec: 15.0          # 链上持仓核对周期
+  venue_probe_sec: 30.0        # 故障交易所探测周期
+  http_keepalive_sec: 10.0     # 订单链路 TLS 保活，避免冷启动握手 10-15ms
+
+# ================== 数据采集 / RECORDER ======================================
+# 每分钟写一行 CSV，是 tools/analyze.py 的唯一输入，也是动态价差的训练数据。
+# 保持开启 —— 后面做动态 midline 全靠它。
+recorder:
+  enabled: true
+  csv: logs/minutes.csv
+
+# ==================== 日志与仪表盘 / LOGGING =================================
+logging:
+  level: INFO
+  status_interval_sec: 30.0
+  trades_csv: logs/trades.csv
+  dashboard: false          # VPS 上 nohup 跑，无终端，关掉 Rich 仪表盘
+  file: logs/engine.log
