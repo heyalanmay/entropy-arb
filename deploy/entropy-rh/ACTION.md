@@ -650,6 +650,8 @@ python3 main.py --symbol SNDK --hedge lighter-rh
 | 一直不触发 | 门槛设太高（现在 +7.7 bps 就是这样） | **正常现象**，等采集数据算真实阈值 |
 | 网页端老被踢下线 | API key index 用了 0~3 | 换 4~254 |
 | guard 报 CRIT: net exposure | 一腿成交另一腿没跟上 | 看 `logs/trades.csv`，人工平掉单边 |
+| 日志刷 `ws error: ... requires python-socks`，两腿全 STALE、`rec 0 rows`、minutes.csv 不生成 | Mac 开了 Clash/Surge 的**系统代理**，websockets 读 macOS 系统设置里的 SOCKS 并劫持连接（REST 走 aiohttp 不读代理所以能取到元数据，看着像"连上了"） | 用 record.sh v3（已内置 `no_proxy='*'` 强制直连）；必须走代理时 `USE_PROXY=1 bash record.sh 24h`。注意**只 unset 环境变量无效**，系统设置那层还在 |
+| record.sh 说"进程活着但还没落盘"然后就没动静 | 旧版只检查进程存活，不检查 WS 是否真连上 | 拉 v3：40 秒内两腿必须都出现 `connected`，否则直接报错停掉 |
 
 ---
 
