@@ -59,6 +59,59 @@ def load(path: str) -> list[dict]:
     return out
 
 
+def mean_reversion(rows: list[dict], fees_rt: float) -> None:
+    """真正的可行性判据：溢价在多长窗口内、能朝有利方向摆动多少。
+
+    引擎每次切片留下一对对冲持仓（buy.position += / sell.position -=，
+    engine.py:444-445），没有自动平仓 —— 要靠一次反向切片才能落袋。
+    两笔合起来：
+
+        净利 ≈ (开仓溢价 − 平仓溢价) − (两腿价差合计) − 手续费×2
+
+    所以赚钱全靠溢价均值回归，跟单次开仓捕获多少无关。
+    这里直接测：每个起点出发，h 分钟内能拿到的最大有利摆动有多大。
+    """
+    prem = [r["prem"] for r in rows]
+    e_sp = st.median([(r["e_ask"] / r["e_bid"] - 1) * 1e4 for r in rows])
+    h_sp = st.median([(r["h_ask"] / r["h_bid"] - 1) * 1e4 for r in rows])
+    spread = e_sp + h_sp
+    hurdle = spread + fees_rt
+
+    print("\n" + "=" * 74)
+    print(" 溢价均值回归 —— 决定盈亏的真正变量")
+    print("=" * 74)
+    print(f" 回本所需摆动 = 两腿价差 {spread:.2f} + 手续费 {fees_rt:.1f} = **{hurdle:.1f} bps**")
+    print(" （卖出方向：开仓后溢价要跌够这么多；买入方向反过来，要涨够这么多）")
+    print(f"\n {'窗口':>6}  {'有利摆动 p50':>13}{'p90':>9}{'p99':>9}{'最大':>9}"
+          f"{'达标窗口':>10}{'达标/天':>9}")
+    print(" " + "-" * 66)
+
+    days = max((rows[-1]["ts"] - rows[0]["ts"]) / 86400, 1e-9)
+    step = 1
+    for h in [1, 3, 5, 15, 30, 60, 120]:
+        if len(rows) < h + 2:
+            continue
+        swings = []
+        for i in range(0, len(rows) - h, step):
+            p0 = prem[i]
+            win = prem[i + 1: i + 1 + h]
+            if not win:
+                continue
+            # 两个方向都算，取更划算的那个（你总能选先卖还是先买）
+            down = p0 - min(win)      # 先卖 E：溢价跌
+            up = max(win) - p0        # 先买 E：溢价涨
+            swings.append(max(down, up))
+        if not swings:
+            continue
+        hit = sum(1 for s in swings if s >= hurdle)
+        print(f" {h:>5}m " + "".join(fmt(v, 9) for v in
+              [pct(swings, .5), pct(swings, .9), pct(swings, .99), max(swings)])
+              + f"{hit:>6}/{len(swings):<4}{hit/days:>9.1f}")
+
+    print(f"\n 读法：'达标/天' 是乐观上界（假设你每一分钟都开一笔、且次次抓到窗口内最优点。")
+    print("        真实可成交次数远低于此。若最大摆动都够不到回本线，这品种就是做不了。")
+
+
 def pct(xs: list[float], p: float) -> float:
     if not xs:
         return float("nan")
@@ -198,7 +251,30 @@ def main() -> None:
         print(f" {g:>5} b  {cs:>6} ({cs/len(rows)*100:4.1f}%) {cs/days:>7.1f}   "
               f"{cb:>6} ({cb/len(rows)*100:4.1f}%) {cb/days:>7.1f}")
 
+    # ---- 中枢漂移（静态 midline 的死穴）----
+    if span_min >= 60:
+        half = len(rows) // 2
+        m1 = st.median([r["prem"] for r in rows[:half]])
+        m2 = st.median([r["prem"] for r in rows[half:]])
+        print("\n" + "=" * 74)
+        print(" 中枢漂移")
+        print("=" * 74)
+        print(f" 前半段中位 {m1:+.2f}   后半段中位 {m2:+.2f}   漂移 {m2-m1:+.2f} bps")
+        if abs(m2 - m1) > fees_rt / 2:
+            print(f" !! 漂移 {abs(m2-m1):.1f} bps 已超过半个往返成本 —— "
+                  f"写死 midline 必然错配，方向反了会稳定亏钱")
+            print("    → 这正是要做动态 midline（EWMA）的理由，见优化方向 #2")
+
+    mean_reversion(rows, fees_rt)
+
     # ---- 往返回测 ----
+    if len(rows) < 30:
+        print("\n" + "=" * 74)
+        print(f" 往返回测：跳过 —— 只有 {len(rows)} 分钟，开仓后找不到平仓窗口")
+        print(" 至少 30 分钟（建议 24 小时）才有意义。")
+        print("=" * 74)
+        return
+
     modes = [("分钟峰值(乐观)", True), ("分钟均值(悲观)", False)]
     if a.edge != "both":
         modes = [m for m in modes if m[1] == (a.edge == "max")]
