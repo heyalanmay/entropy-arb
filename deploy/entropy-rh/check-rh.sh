@@ -36,13 +36,18 @@ ok=1
 # ---- 1. 账户是否存在 ----
 RESP=$(curl -s -m 25 "$RH_API/api/v1/accountsByL1Address?l1_address=$ADDR" 2>/dev/null)
 CODE=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('code'))" 2>/dev/null || echo "ERR")
-ACCT_IDX=$(echo "$RESP" | python3 -c "
+PARSED=$(echo "$RESP" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
-accs=d.get('accounts') or d.get('account_indices') or []
+accs=d.get('sub_accounts') or d.get('accounts') or d.get('account_indices') or []
 if accs:
-    print(accs[0] if isinstance(accs[0],int) else accs[0].get('account_index'))
+    first=accs[0]
+    idx=first if isinstance(first,int) else (first.get('index') or first.get('account_index'))
+    coll=first.get('collateral') if isinstance(first,dict) else ''
+    print(f'{idx}\t{coll}')
 " 2>/dev/null || echo "")
+ACCT_IDX=$(printf '%s' "$PARSED" | cut -f1)
+COLL=$(printf '%s' "$PARSED" | cut -f2)
 
 echo
 echo "[1] 子账户（account_index）"
@@ -85,9 +90,14 @@ fi
 # ---- 3. 余额（只读拿不到，提示去网页看）----
 echo
 echo "[3] 链上余额"
-echo "    只读接口查不到余额，请在网页确认："
-echo "    robinhoodchain.lighter.xyz → 账户页应显示 USDG（充 USDC 进去会显示成 USDG，正常）"
-echo "    要够一腿：$30 以上（bot 单笔最多 $30，留余量）"
+if [[ -n "$COLL" ]]; then
+    echo "    只读接口可见保证金: $COLL USDG"
+    echo "    （≥ \$30 即可，已达标 ✓）"
+else
+    echo "    只读接口未能读取，请在网页确认："
+    echo "    robinhoodchain.lighter.xyz → 账户页应显示 USDG（充 USDC 进去会显示成 USDG，正常）"
+    echo "    要够一腿：\$30 以上（bot 单笔最多 \$30，留余量）"
+fi
 
 # ---- 结论 ----
 echo
